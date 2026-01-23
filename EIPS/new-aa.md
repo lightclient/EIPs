@@ -230,10 +230,10 @@ Initialize with transaction-scoped variables:
 Then for each call frame:
 
 1. Execute a `call` with the specified `flags`, `target`, `gas`, and `data`.
-   - If `CALL_FROM_SENDER` is set, check if `sender_approved == true`. If so,
+   - If `AS_SENDER` is set, check if `sender_approved == true`. If so,
      set the `caller` to `tx.sender`. If not, perform a Transaction-level
      Reversion.
-   - If `CALL_FROM_SENDER` is not set, set the `caller` to `AA_ENTRY_POINT`.
+   - If `AS_SENDER` is not set, set the `caller` to `AA_ENTRY_POINT`.
    - If `target` is null, set the call target to `tx.sender`.
    - The `ORIGIN` opcode returns the `caller` throughout all call depths
      (including nested calls within the frame).
@@ -250,7 +250,7 @@ Then for each call frame:
      `effective_gas_price` is calculated per EIP-1559. If `target` has
      insufficient balance, perform a Transaction-level Reversion.
    - `0x2` (both): Apply both of the above rules.
-4. If `TX_REVERT_ON_FAIL` is set and the frame did not terminate via
+4. If `REVERT` is set and the frame did not terminate via
    `APPROVE`, perform a Transaction-level Reversion.
 
 After executing all frames, verify that `payer_approved == true`. If it is,
@@ -317,7 +317,7 @@ extensible to support quantum-resistant signature aggregation.
 
 | Frame | Caller         | Target       | Data      | Flags              |
 | ----- | -------------- | ------------ | --------- | ------------------ |
-| 0     | AA_ENTRY_POINT | User account | Signature | TX_REVERT_ON_FAIL  |
+| 0     | AA_ENTRY_POINT | User account | Signature | REVERT             |
 | 1     | User account   | Target addr  | User data | none               |
 
 Frame 0 verifies the signature and exits with `APPROVE(0x2)` to approve both
@@ -334,8 +334,8 @@ The mempool can process this transaction with the following static validations:
 
 | Frame | Caller         | Target       | Data           | Flags             |
 | ----- | -------------- | ------------ | -------------- | ----------------- |
-| 0     | AA_ENTRY_POINT | User account | Signature      | TX_REVERT_ON_FAIL |
-| 1     | AA_ENTRY_POINT | Paymaster    | Paymaster data | TX_REVERT_ON_FAIL |
+| 0     | AA_ENTRY_POINT | User account | Signature      | REVERT            |
+| 1     | AA_ENTRY_POINT | Paymaster    | Paymaster data | REVERT            |
 | 2     | User account   | ERC20        | Transfer call  | none              |
 | 3     | User account   | Target addr  | User data      | none              |
 | 4     | AA_ENTRY_POINT | Paymaster    | postOp call    | none              |
@@ -358,14 +358,14 @@ factory deploying the contract. The mempool would have to whitelist factories.
 
 | Frame | Caller         | Target       | Data       | Flags                      |
 | ----- | -------------- | ------------ | ---------- | -------------------------- |
-| 0     | AA_ENTRY_POINT | User account | Signature  | TX_REVERT_ON_FAIL, IS_PURE |
-| 1     | AA_ENTRY_POINT | User account | Public key | TX_REVERT_ON_FAIL          |
+| 0     | AA_ENTRY_POINT | User account | Signature  | REVERT, PURE               |
+| 1     | AA_ENTRY_POINT | User account | Public key | REVERT                     |
 | 2     | User account   | Target addr  | User data  | none                       |
 
 - Frame 0: Verifies the signature using the public key from frame 1's data
   (accessed via `TXPARAM(0x13, 1)`). Exits via `RETURN`. Because both
-  `TX_REVERT_ON_FAIL` and `IS_PURE` are set, a successful `RETURN` does not
-  trigger a Transaction-level Reversion.
+  `REVERT` and `PURE` are set, a successful `RETURN` does not
+  trigger a Transaction-level Revert.
 - Frame 1: Verifies the previous frame passed via `TXPARAM(0x16, 0)`. Checks
   the public key and nonce. Exits with `APPROVE(0x2)` if correct.
 - Frame 2: User's intended call. Exits normally via `RETURN`.
