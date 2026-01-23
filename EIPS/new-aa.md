@@ -1,5 +1,5 @@
 ---
-title: Abstract frame transaction
+title: Transaction frames
 description: Add frame abstraction for transaction validation, execution, and gas payment
 author: Vitalik Buterin (@vbuterin), lightclient (@lightclient), Felix Lange (@fjl)
 discussions-to: <URL>
@@ -7,13 +7,14 @@ status: Draft
 type: Standards Track
 category: Core
 created: 2026-01-22
+requires: 2718
 ---
 
 ## Abstract
 
-We propose splitting the Ethereum transaction scope into multiple frames:
-validations, execution, and post-operation logic. Transaction validity is
-determined by the result of the validation steps of a transaction.
+We propose splitting the transaction scope into multiple frames: validations,
+execution, and post-operation logic. Transaction validity is determined by the
+result of the validation steps of a transaction.
 
 We further separate transaction validation for the purposes of authorization
 and the gas fee payment, allowing one contract to pay gas for a transaction
@@ -317,7 +318,7 @@ extensible to support quantum-resistant signature aggregation.
 
 | Frame | Caller         | Target       | Data      | Flags              |
 | ----- | -------------- | ------------ | --------- | ------------------ |
-| 0     | AA_ENTRY_POINT | User account | Signature | REVERT             |
+| 0     | AA_ENTRY_POINT | User account | None      | REVERT             |
 | 1     | User account   | Target addr  | User data | AS_SENDER          |
 
 Frame 0 verifies the signature and exits with `APPROVE(0x2)` to approve both
@@ -334,16 +335,16 @@ The mempool can process this transaction with the following static validations:
 
 | Frame | Caller         | Target       | Data           | Flags             |
 | ----- | -------------- | ------------ | -------------- | ----------------- |
-| 0     | AA_ENTRY_POINT | User account | Signature      | REVERT            |
+| 0     | AA_ENTRY_POINT | User account | None           | REVERT            |
 | 1     | AA_ENTRY_POINT | Paymaster    | Paymaster data | REVERT            |
-| 2     | User account   | ERC20        | Transfer call  | AS_SENDER         |
+| 2     | User account   | ER-C20        | Transfer call  | AS_SENDER         |
 | 3     | User account   | Target addr  | User data      | AS_SENDER         |
 | 4     | AA_ENTRY_POINT | Paymaster    | postOp call    | none              |
 
 - Frame 0: Verifies signature and exits with `APPROVE(0x0)` to authorize
   execution from sender.
 - Frame 1: Verifies the previous frame's status via `TXPARAM(0x16, 0)`, checks
-  that the user has enough ERC20 tokens, and that the next frame is an ERC20
+  that the user has enough ER-C20 tokens, and that the next frame is an ERC20
   send of the right size to the paymaster. Exits with `APPROVE(0x1)` to
   authorize payment.
 - Frame 2: Sends tokens to paymaster.
@@ -363,9 +364,7 @@ factory deploying the contract. The mempool would have to whitelist factories.
 | 2     | User account   | Target addr  | User data  | AS_SENDER                  |
 
 - Frame 0: Verifies the signature using the public key from frame 1's data
-  (accessed via `TXPARAM(0x13, 1)`). Exits via `RETURN`. Because both
-  `REVERT` and `PURE` are set, a successful `RETURN` does not
-  trigger a Transaction-level Revert.
+  (accessed via `TXPARAM(0x13, 1)`). Exits via `RETURN`
 - Frame 1: Verifies the previous frame passed via `TXPARAM(0x16, 0)`. Checks
   the public key and nonce. Exits with `APPROVE(0x2)` if correct.
 - Frame 2: User's intended call. Exits normally via `RETURN`.
@@ -420,7 +419,7 @@ overhead is the need to specify the sender explicitly.
 
 Notes: Gas assumes cost < 2^24. Calldata assumes small proxy.
 
-**Trustless pay-with-ERC20 paymaster (add these frames):**
+**Trustless pay-with-ERC-20 paymaster (add these frames):**
 
 | Field                                | Bytes |
 | ------------------------------------ | ----- |
