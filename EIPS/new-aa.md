@@ -47,43 +47,28 @@ A new [EIP-2718](./eip-2718) transaction with `TransactionType` `AA_TX_TYPE` is 
 The `TransactionPayload` is defined as the RLP serialization of the following:
 
 ```
-[chain_id, nonce, sender, max_priority_fee_per_gas, max_fee_per_gas, frames, allowed_pure_codes, signature]
+[chain_id, nonce, sender, max_priority_fee_per_gas, max_fee_per_gas, frames, signature]
 
 frames = [[flags, target, gas_limit, data], ...]
-allowed_pure_codes = [address, ...]
 ```
 
 #### Flags
 
-The `flags` field is interpreted as a bit field with four potential modes: `STATIC`, `PURE`, `REVERT`, and `AS_SENDER`.
+The `flags` field is interpreted as a bit field with three potential modes: `STATIC`, `REVERT`, and `AS_SENDER`.
 
-| Bit | Name      | Summary                                                                              |
-| --- | --------- | ------------------------------------------------------------------------------------ |
-| 0   | STATIC    | Frame is read-only.                                                                  |
-| 1   | PURE      | Cannot read or write state, except code of accounts listed in `allowed_pure_codes`. |
-| 2   | REVERT    | Perform transaction-level revert if call fails.                                      |
-| 3   | AS_SENDER | Set `frame.caller` to `tx.sender`                                                    |
+| Bit | Name      | Summary                                     |
+| --- | --------- | ------------------------------------------- |
+| 0   | STATIC    | Frame is read-only.                         |
+| 1   | REVERT    | Perform transaction-level revert if call fails. |
+| 2   | AS_SENDER | Set `frame.caller` to `tx.sender`           |
 
 ##### `STATIC` Mode
 
 Frame executes in read-only mode.
 
-##### `PURE` Mode
-
-- Frame may not read or write any state, other than the code of accounts listed in `allowed_pure_codes`.
-  - This would include disallowing `CREATE`, `CREATE2`, `SSTORE`, `SELFDESTRUCT`, `SLOAD`, `BALANCE`, `SELFBALANCE`, and any `CALL`-family operation that sends value.
-  - `EXTCODE{COPY,SIZE,HASH}` of addresses in `allowed_pure_codes` is permitted.
-- Environmental opcodes are not allowed.
-  - e.g. `BLOCKHASH`, `COINBASE`, `TIMESTAMP`, `NUMBER`, `GASLIMIT`, `BASEFEE`.
-- `TXPARAM` is allowed in this mode.
-- If another frame introspects the `data` of a frame with `PURE` set, `TXPARAM` must return an empty list.
-
-Note: `STATIC` and `PURE` flags cannot both be set in the same frame.
-
 ##### `REVERT` Mode
 
-- If the frame terminates without using the `APPROVE` opcode perform a Transaction-level Revert (defined below).
-  - Exception: when `PURE` and `REVERT` are both set, a successful `STOP` or `RETURN` does not trigger a transaction-level revert.
+If the frame terminates without using the `APPROVE` opcode, perform a Transaction-level Revert (defined below).
 
 ##### `AS_SENDER` Mode
 
@@ -98,9 +83,8 @@ assert tx.chain_id < 2**256
 assert tx.nonce < 2**256
 assert len(tx.frames) > 0
 assert len(tx.sender) == 20
-assert tx.frames[n].flags >> 4 == 0
+assert tx.frames[n].flags >> 3 == 0
 assert len(tx.frames[n].target) == 20 or tx.frames[n].target is None
-assert not (tx.frames[n].flags & 1 and tx.frames[n].flags & 2)
 ```
 
 #### Receipt
@@ -130,12 +114,12 @@ If the approval argument is `>= 0x3`, execution results in an exceptional halt.
 
 The status of a call returning with `APPROVE` has three new potential status codes.
 
-| Code | Result               | Description                                  |
-| ---- | -------------------- | -------------------------------------------- |
-| 0    | `FAIL`               | Call reverted                                |
-| 1    | `SUCCESS`            | Call completed successfully                  |
-| 2    | `APPROVED_EXECUTION` | Call approved execution successfully         |
-| 3    | `APPROVED_PAYMENT`   | Call approved payment successfully           |
+| Code | Result               | Description                                      |
+| ---- | -------------------- | ------------------------------------------------ |
+| 0    | `FAIL`               | Call reverted                                    |
+| 1    | `SUCCESS`            | Call completed successfully                      |
+| 2    | `APPROVED_EXECUTION` | Call approved execution successfully             |
+| 3    | `APPROVED_PAYMENT`   | Call approved payment successfully               |
 | 4    | `APPROVED_BOTH`      | Call approved execution and payment successfully |
 
 *Note: codes `0` and `1` already exist today and are replicated here for completeness.*
@@ -163,19 +147,17 @@ Each `TXPARAM*` opcode takes two extra stack input values before the `CALLDATA*`
 | 0x14  | frame index | `gas_limit`                          | 32      |
 | 0x15  | frame index | `flags`                              | 32      |
 | 0x16  | frame index | `status` (error if current/future)   | 32      |
-| 0x20  | must be 0   | `len(allowed_pure_codes)`            | 32      |
-| 0x21  | index       | `allowed_pure_codes[in2]`            | 32      |
 
 Notes:
 - 0x03 and 0x04 have a possible future extension to allow indices for multidimensional gas.
 - The `status` field (0x16) returns `0` for failure or `1` for success.
-- Out-of-bounds access for frame index (`>= len(frames)`) or allowed_pure_codes index (`>= len(allowed_pure_codes)`) results in an exceptional halt.
+- Out-of-bounds access for frame index (`>= len(frames)`) results in an exceptional halt.
 - Invalid `in1` values (not defined in the table above) result in an exceptional halt.
 
 The `tx_hash_for_signature` (0x06) is computed as:
 
 ```
-keccak256(AA_TX_TYPE || rlp([chain_id, nonce, sender, max_priority_fee_per_gas, max_fee_per_gas, frames, allowed_pure_codes]))
+keccak256(AA_TX_TYPE || rlp([chain_id, nonce, sender, max_priority_fee_per_gas, max_fee_per_gas, frames]))
 ```
 
 This is the hash that contracts should use for signature verification.
@@ -278,20 +260,6 @@ The mempool can process this transaction with the following static validations:
 
 If the contract is not yet deployed, in all cases, prepend a frame calling the factory deploying the contract. The mempool would have to whitelist factories.
 
-### Example 3: Quantum-Safe Aggregation
-
-| Frame | Caller         | Target       | Data       | Flags        |
-| ----- | -------------- | ------------ | ---------- | ------------ |
-| 0     | AA_ENTRY_POINT | User account | Signature  | REVERT, PURE |
-| 1     | AA_ENTRY_POINT | User account | Public key | REVERT       |
-| 2     | User account   | Target addr  | User data  | AS_SENDER    |
-
-- Frame 0: Verifies the signature using the public key from frame 1's data (accessed via `TXPARAM(0x13, 1)`). Exits via `RETURN`. Because both `REVERT` and `PURE` are set, a successful `RETURN` does not trigger a Transaction-level Revert.
-- Frame 1: Verifies the previous frame passed via `TXPARAM(0x16, 0)`. Checks the public key and nonce. Exits with `APPROVE(0x2)` if correct.
-- Frame 2: User's intended call. Exits normally via `RETURN`.
-
-The total purity of frame 0, and the fact that other frames are not allowed to access its calldata, means that frame 0 can theoretically be elided and replaced with a STARK proof of its correct execution. This is what enables future efficient ZK-STARK support: users can include (highly expensive) quantum-safe signatures or even STARKs in this phase, and the large calldata can be completely elided from the block.
-
 ### Data Efficiency
 
 **Basic transaction sending ETH from a smart account:**
@@ -313,8 +281,7 @@ The total purity of frame 0, and the fact that other frames are not allowed to a
 | Execution frame: gas              | 1     |
 | Execution frame: calldata         | 0     |
 | Execution frame: flags            | 1     |
-| Allowed pure codes wrapper        | 1     |
-| **Total**                         | 127   |
+| **Total**                         | 126   |
 
 Notes: Nonce assumes < 65536 prior sends. Fees assume < 1099 gwei. Validation frame target is 1 byte because target is tx.sender. Validation gas assumes <= 65,536 gas. Calldata is 65 bytes for ECDSA signature.
 
