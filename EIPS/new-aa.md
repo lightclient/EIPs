@@ -1,6 +1,6 @@
 ---
-title: Native Account Abstraction
-description: Frame-based native account abstraction
+title: Abstract frame transaction
+description: Add frame abstraction for transaction validation, execution, and gas payment
 author: Vitalik Buterin (@vbuterin), lightclient (@lightclient), Felix Lange (@fjl)
 discussions-to: <URL>
 status: Draft
@@ -11,7 +11,7 @@ created: 2026-01-22
 
 ## Abstract
 
-We propose splitting the Ethereum transaction scope into multiple steps:
+We propose splitting the Ethereum transaction scope into multiple frames:
 validations, execution, and post-operation logic. Transaction validity is
 determined by the result of the validation steps of a transaction.
 
@@ -21,12 +21,11 @@ that will be executed from another contract.
 
 ## Motivation
 
-Native Account Abstraction allows custom validation logic of a transaction and
-custom gas payment logic, opening new use-cases and features for wallets and
-dApps.
-
-A more detailed motivation for this proposal can be found in the
-[README document](../assets/eip-7701/README.md).
+This new transaction provides a native off ramp from the elliptic curve based
+cryptographic system used to authenticate transactions today, to post-quantum
+secure systems. It is defined in such an abstract manner that it can support all
+important use cases: PQ crypto, signature aggregation, native support for
+Inclusion Lists, etc.
 
 ## Specification
 
@@ -50,41 +49,93 @@ A more detailed motivation for this proposal can be found in the
 
 ### New Transaction Type
 
-A new [EIP-2718](./eip-2718) transaction with type `AA_TX_TYPE` is introduced.
+A new [EIP-2718](./eip-2718) transaction with `TransactionType` `AA_TX_TYPE` is introduced.
 Transactions of this type are referred to as "AA transactions".
 
-Their payload should be interpreted as:
+The `TransactionPayload` is defined as the RLP serialization of the following:
 
 ```
-AA_TX_TYPE || rlp([
-  chain_id: int,
-  nonce: int,
-  sender: Address,
-  max_priority_fee_per_gas: int,
-  max_fee_per_gas: int,
-  frames: List[Frame],
-  allowed_pure_codes: List[Address]
-])
+[chain_id, nonce, sender, max_priority_fee_per_gas, max_fee_per_gas, frames,
+allowed_pure_codes, signature]
+
+frames = [[flags, target, gas_limit, data], ...]
+allowed_pure codes = [address, ...]
 ```
 
-`frames` must be a list of objects, all of the form:
+#### Flags
+
+The `flag` field is interpreted as a bit field with four potential modes:
+`STATIC`, `PURE`, `REVERT`, and `AS_SENDER`.
+
+| Bit   | Name | Summary |
+|---|---|---|
+| 0 | STATIC  | Frame is read-only. | 
+| 1 | PURE  | Cannot read or write state, except code of accounts listed in `allow_pure_codes`.  |
+| 2 |  REVERT | Perform transaction-level revert if call fails. |
+| 3 |  AS_SENDER | Set `frame.caller`  to `tx.sender` |
+
+##### `STATIC` Mode
+
+Frame executes in read-only mode.
+
+##### `PURE` Mode
+
+- Frame may not read or write any state, other than the code of accounts listed in
+`allowed_pure_codes`. 
+  - This would include disallowing `CREATE`, `CREATE2`, `SSTORE`,
+  `SELFDESTRUCT`, `SLOAD`, `BALANCE`, `SELFBALANCE`, and any `CALL`-family operation
+  that sends value.
+  - `EXTCODE{COPY,SIZE,HASH}` of addresses in `allowed_pure_codes` is permitted.
+- Environmental opcodes are not allowed.
+  - e.g. `BLOCKHASH`, `COINBASE`, `TIMESTAMP`, `NUMBER`, `GASLIMIT`, `BASEFEE`.
+- `TXPARAM` is allowed in this mode.
+- If another frame introspects the `data` of a frame with `PURE` set, `TXPARAM`
+must return an empty list.
+
+Note: `STATIC` and `PURE` flags cannot both be set in the same frame.
+
+##### `REVERT` Mode
+
+- If the frame terminates without using the `APPROVE` opcode perform a
+Transaction-level Reversion (defined below).
+  - Exception: when `PURE` and `REVERT` are both set, a successful
+`STOP` or `RETURN` does not trigger a transaction-level revert.
+
+##### `SENDER` Mode
+
+Frame caller is set to `tx.sender`.
+
+#### Constraints
+
+Some validity constraints can be determined statically. They are outlined below:
+
+```python
+assert tx.chain_id < 2**256
+assert tx.nonce < 2**256
+assert len(tx.frames) > 0
+assert len(tx.sender) == 20
+assert tx.frames[n].flag >> 3 == 0
+assert len(tx.frames[n].address) == 20 || tx.frames[n]) == None
+assert not (tx.frame[n].flags & 1 and tx.frame[n].flags & 1)
+```
+
+#### Receipt
+
+The `ReceiptPayload` is defined as:
 
 ```
-[flags: int, target: address or null, gas: int, data: Bytes]
+[frame_receipt, ...]
+frame_receipt = [status, gas_used, sender, payer, logs]
 ```
 
-`flags` must not have any higher bits set than the flags defined below.
-`allowed_pure_codes` must be a list of 0 or more addresses.
 
-A transaction with an empty `frames` list is invalid. Frames with `gas: 0`
-follow normal EVM semantics and may succeed if calling an account with no code.
+### New Opcodes
 
-### `APPROVE` opcode (`0xaa`)
+#### `APPROVE` opcode (`0xaa`)
 
-We introduce an `APPROVE` opcode, which functions equivalently to `RETURN`,
-except it takes an additional stack argument which describes the scope of the
-approval. The gas cost is the same as `RETURN`. The return data format is
-identical to `RETURN`.
+The `APPROVE` opcode functions equivalently to `RETURN`, except it takes an
+additional stack argument which describes the scope of the approval. The gas
+cost is the same as `RETURN`. The return data format is identical to `RETURN`.
 
 The approval argument must be one of the following values:
 
@@ -96,11 +147,25 @@ The approval argument must be one of the following values:
 
 If the approval argument is `>= 0x3`, execution results in an exceptional halt.
 
-`APPROVE` may be called from nested calls within a frame, as long as the
+`APPROVE` may be invoked from nested calls within a frame, as long as the
 approval propagates from the required contract (sender for `0x0`/`0x2`, payer
 for `0x1`/`0x2`).
 
-### `TXPARAM*` opcodes
+The status of a call returning with `APPROVE` has three new potential status
+codes.
+
+| Code  | Result | Description |
+|---|---|---|
+| 0 | `FAIL` | Call reverted |
+| 1 | `SUCCESS` | Call completed successfully |
+| 2 | `APPROVED_EXECUTION` | Call approved execution successfully |
+| 3 | `APPROVED_PAYMENT` | Call approved payment successfully |
+| 4 | `APPROVED_BOTH` | Call approved execution and payment successfully |
+
+*Note: codes `0` and `1` already exist today and are replicated here for
+completeness.*
+
+#### `TXPARAM*` opcodes
 
 The `TXPARAMDLOAD` (`0xb0`), `TXPARAMSIZE` (`0xb1`), and `TXPARAMCOPY` (`0xb2`)
 opcodes follow the pattern of `CALLDATA*` / `RETURNDATA*` opcode families. Gas
@@ -118,6 +183,7 @@ Each `TXPARAM*` opcode takes two extra stack input values before the
 | 0x04  | must be 0   | `max_fee_per_gas`                   | 32      |
 | 0x05  | must be 0   | max cost (basefee=max, all gas used)| 32      |
 | 0x06  | must be 0   | `tx_hash_for_signature`             | 32      |
+| 0x07  | must be 0   | `signature`                         | dynamic |
 | 0x10  | must be 0   | `len(frames)`                       | 32      |
 | 0x11  | must be 0   | currently executing frame index     | 32      |
 | 0x12  | frame index | `target`                            | 32      |
@@ -153,54 +219,15 @@ keccak256(AA_TX_TYPE || rlp([
 
 This is the hash that contracts should use for signature verification.
 
-### Flags
+### Processing flow
 
-The flag bits are defined as follows:
-
-**Bit 0: IS_STATIC**
-
-Call cannot modify state but can read (like a STATICCALL).
-
-**Bit 1: IS_PURE**
-
-Call cannot modify state and cannot read *any* state. The following opcodes are
-prohibited: `CREATE`, `CREATE2`, `SSTORE`, `SELFDESTRUCT`, `SLOAD`, `BALANCE`,
-`SELFBALANCE`, and any `CALL` operation that sends value (non-zero value
-parameter).
-
-Exceptions:
-- `EXTCODE{COPY,SIZE,HASH}` of addresses in `allowed_pure_codes` is permitted.
-- `DELEGATECALL` to addresses in `allowed_pure_codes` is permitted, but purity
-  restrictions apply to the executed code.
-- No exception for precompiles unless they are listed in `allowed_pure_codes`.
-
-Cannot read environmental opcodes (e.g., `BLOCKHASH`, `COINBASE`, `TIMESTAMP`,
-`NUMBER`, `GASLIMIT`, `BASEFEE`). Can use `TXPARAM`. Other frames see this
-frame's data as empty.
-
-Note: IS_STATIC and IS_PURE cannot both be 1 at the same time.
-
-**Bit 2: TX_REVERT_ON_FAIL**
-
-If the frame terminates without using the `APPROVE` opcode (i.e., exits via
-`RETURN`, `REVERT`, `STOP`, `SELFDESTRUCT`, or due to an exception such as
-out-of-gas), perform a Transaction-level Reversion (defined below).
-
-Exception: When `TX_REVERT_ON_FAIL` and `IS_PURE` are both set, a successful
-`RETURN` does not trigger a Transaction-level Reversion. This allows pure
-verification frames to pass without requiring approval.
-
-**Bit 3: CALL_FROM_SENDER**
-
-Caller is set to `tx.sender` (otherwise it's `AA_ENTRY_POINT`).
-
-### AA transaction processing flow
+When processing a AA transaction, perform the following steps.
 
 Initialize with transaction-scoped variables:
 - `payer_approved: bool = false`
 - `sender_approved: bool = false`
 
-For each call frame:
+Then for each call frame:
 
 1. Execute a `call` with the specified `flags`, `target`, `gas`, and `data`.
    - If `CALL_FROM_SENDER` is set, check if `sender_approved == true`. If so,
@@ -230,7 +257,7 @@ After executing all frames, verify that `payer_approved == true`. If it is,
 refund any unpaid gas to the gas payer. If it is not, the whole transaction is
 invalid.
 
-**Transaction-level Reversion** is defined as follows:
+**Transaction-level Revert** is defined as follows:
 
 - If `payer_approved == false`, the whole transaction is invalid.
 - If `payer_approved == true`, revert all frames up until, but not including,
