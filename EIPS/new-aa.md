@@ -59,7 +59,7 @@ The `TransactionPayload` is defined as the RLP serialization of the following:
 allowed_pure_codes, signature]
 
 frames = [[flags, target, gas_limit, data], ...]
-allowed_pure codes = [address, ...]
+allowed_pure_codes = [address, ...]
 ```
 
 #### Flags
@@ -70,7 +70,7 @@ The `flag` field is interpreted as a bit field with four potential modes:
 | Bit   | Name | Summary |
 |---|---|---|
 | 0 | STATIC  | Frame is read-only. | 
-| 1 | PURE  | Cannot read or write state, except code of accounts listed in `allow_pure_codes`.  |
+| 1 | PURE  | Cannot read or write state, except code of accounts listed in `allowed_pure_codes`.  |
 | 2 |  REVERT | Perform transaction-level revert if call fails. |
 | 3 |  AS_SENDER | Set `frame.caller`  to `tx.sender` |
 
@@ -97,11 +97,11 @@ Note: `STATIC` and `PURE` flags cannot both be set in the same frame.
 ##### `REVERT` Mode
 
 - If the frame terminates without using the `APPROVE` opcode perform a
-Transaction-level Reversion (defined below).
+Transaction-level Revert (defined below).
   - Exception: when `PURE` and `REVERT` are both set, a successful
 `STOP` or `RETURN` does not trigger a transaction-level revert.
 
-##### `SENDER` Mode
+##### `AS_SENDER` Mode
 
 Frame caller is set to `tx.sender`.
 
@@ -114,9 +114,9 @@ assert tx.chain_id < 2**256
 assert tx.nonce < 2**256
 assert len(tx.frames) > 0
 assert len(tx.sender) == 20
-assert tx.frames[n].flag >> 3 == 0
-assert len(tx.frames[n].address) == 20 || tx.frames[n]) == None
-assert not (tx.frame[n].flags & 1 and tx.frame[n].flags & 1)
+assert tx.frames[n].flags >> 4 == 0
+assert len(tx.frames[n].target) == 20 or tx.frames[n].target is None
+assert not (tx.frames[n].flags & 1 and tx.frames[n].flags & 2)
 ```
 
 #### Receipt
@@ -188,7 +188,7 @@ Each `TXPARAM*` opcode takes two extra stack input values before the
 | 0x11  | must be 0   | currently executing frame index     | 32      |
 | 0x12  | frame index | `target`                            | 32      |
 | 0x13  | frame index | `data`                              | dynamic |
-| 0x14  | frame index | `gas`                               | 32      |
+| 0x14  | frame index | `gas_limit`                         | 32      |
 | 0x15  | frame index | `flags`                             | 32      |
 | 0x16  | frame index | `status` (error if current/future)  | 32      |
 | 0x20  | must be 0   | `len(allowed_pure_codes)`           | 32      |
@@ -229,10 +229,10 @@ Initialize with transaction-scoped variables:
 
 Then for each call frame:
 
-1. Execute a `call` with the specified `flags`, `target`, `gas`, and `data`.
+1. Execute a `call` with the specified `flags`, `target`, `gas_limit`, and `data`.
    - If `AS_SENDER` is set, check if `sender_approved == true`. If so,
      set the `caller` to `tx.sender`. If not, perform a Transaction-level
-     Reversion.
+     Revert.
    - If `AS_SENDER` is not set, set the `caller` to `AA_ENTRY_POINT`.
    - If `target` is null, set the call target to `tx.sender`.
    - The `ORIGIN` opcode returns the `caller` throughout all call depths
@@ -246,12 +246,12 @@ Then for each call frame:
    - `0x1` (payment approval): If `payer_approved` is `false`, increment the
      nonce, collect the total gas cost from `target`, and set
      `payer_approved = true`. The total gas cost is defined as
-     `sum(frame.gas for all frames) × effective_gas_price`, where
+     `sum(frame.gas_limit for all frames) × effective_gas_price`, where
      `effective_gas_price` is calculated per EIP-1559. If `target` has
-     insufficient balance, perform a Transaction-level Reversion.
+     insufficient balance, perform a Transaction-level Revert.
    - `0x2` (both): Apply both of the above rules.
 4. If `REVERT` is set and the frame did not terminate via
-   `APPROVE`, perform a Transaction-level Reversion.
+   `APPROVE`, perform a Transaction-level Revert.
 
 After executing all frames, verify that `payer_approved == true`. If it is,
 refund any unpaid gas to the gas payer. If it is not, the whole transaction is
@@ -269,7 +269,7 @@ To *validate* the transaction without *executing* it, run the above only until
 the point that `payer_approved` is set to `true`, then stop.
 
 If desired, we can set a `MAX_VALIDATION_GAS` (e.g., 400,000), and exit with
-failure if `gas_spent_so_far + frame.gas > MAX_VALIDATION_GAS`.
+failure if `gas_spent_so_far + frame.gas_limit > MAX_VALIDATION_GAS`.
 
 The likely two use cases of this are:
 
@@ -294,12 +294,12 @@ transition before frame execution begins.
 
 ### Gas Accounting
 
-Each frame has its own `gas` allocation. Unused gas from a frame is **not**
+Each frame has its own `gas_limit` allocation. Unused gas from a frame is **not**
 available to subsequent frames. After all frames execute, the gas refund is
 calculated as:
 
 ```
-refund = sum(frame.gas for all frames) - total_gas_used
+refund = sum(frame.gas_limit for all frames) - total_gas_used
 ```
 
 This refund is returned to the gas payer (the `target` that called
@@ -318,7 +318,7 @@ extensible to support quantum-resistant signature aggregation.
 | Frame | Caller         | Target       | Data      | Flags              |
 | ----- | -------------- | ------------ | --------- | ------------------ |
 | 0     | AA_ENTRY_POINT | User account | Signature | REVERT             |
-| 1     | User account   | Target addr  | User data | none               |
+| 1     | User account   | Target addr  | User data | AS_SENDER          |
 
 Frame 0 verifies the signature and exits with `APPROVE(0x2)` to approve both
 execution and payment. Frame 1 executes and exits normally via `RETURN`.
@@ -336,8 +336,8 @@ The mempool can process this transaction with the following static validations:
 | ----- | -------------- | ------------ | -------------- | ----------------- |
 | 0     | AA_ENTRY_POINT | User account | Signature      | REVERT            |
 | 1     | AA_ENTRY_POINT | Paymaster    | Paymaster data | REVERT            |
-| 2     | User account   | ERC20        | Transfer call  | none              |
-| 3     | User account   | Target addr  | User data      | none              |
+| 2     | User account   | ERC20        | Transfer call  | AS_SENDER         |
+| 3     | User account   | Target addr  | User data      | AS_SENDER         |
 | 4     | AA_ENTRY_POINT | Paymaster    | postOp call    | none              |
 
 - Frame 0: Verifies signature and exits with `APPROVE(0x0)` to authorize
@@ -360,7 +360,7 @@ factory deploying the contract. The mempool would have to whitelist factories.
 | ----- | -------------- | ------------ | ---------- | -------------------------- |
 | 0     | AA_ENTRY_POINT | User account | Signature  | REVERT, PURE               |
 | 1     | AA_ENTRY_POINT | User account | Public key | REVERT                     |
-| 2     | User account   | Target addr  | User data  | none                       |
+| 2     | User account   | Target addr  | User data  | AS_SENDER                  |
 
 - Frame 0: Verifies the signature using the public key from frame 1's data
   (accessed via `TXPARAM(0x13, 1)`). Exits via `RETURN`. Because both
