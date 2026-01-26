@@ -47,7 +47,7 @@ A new [EIP-2718](./eip-2718) transaction with `TransactionType` `AA_TX_TYPE` is 
 The `TransactionPayload` is defined as the RLP serialization of the following:
 
 ```
-[chain_id, nonce, sender, max_priority_fee_per_gas, max_fee_per_gas, max_fee_per_blob_gas, blob_versioned_hashes, frames, signature]
+[chain_id, nonce, sender, frames, max_priority_fee_per_gas, max_fee_per_gas, max_fee_per_blob_gas, blob_versioned_hashes]
 
 frames = [[flags, target, gas_limit, data], ...]
 ```
@@ -139,33 +139,23 @@ Each `TXPARAM*` opcode takes two extra stack input values before the `CALLDATA*`
 | 0x02  | must be 0   | `sender`                             | 32      |
 | 0x03  | must be 0   | `max_priority_fee_per_gas`           | 32      |
 | 0x04  | must be 0   | `max_fee_per_gas`                    | 32      |
-| 0x05  | must be 0   | max cost (basefee=max, all gas used, includes blob cost) | 32      |
-| 0x06  | must be 0   | `tx_hash_for_signature`              | 32      |
-| 0x07  | must be 0   | `signature`                          | dynamic |
-| 0x08  | must be 0   | `max_fee_per_blob_gas`               | 32      |
-| 0x09  | must be 0   | `len(blob_versioned_hashes)`         | 32      |
-| 0x0a  | blob index  | `blob_versioned_hashes[blob index]`  | 32      |
-| 0x10  | must be 0   | `len(frames)`                        | 32      |
-| 0x11  | must be 0   | currently executing frame index      | 32      |
-| 0x12  | frame index | `target`                             | 32      |
-| 0x13  | frame index | `data`                               | dynamic |
-| 0x14  | frame index | `gas_limit`                          | 32      |
-| 0x15  | frame index | `flags`                              | 32      |
-| 0x16  | frame index | `status` (exceptional halt if current/future) | 32      |
+| 0x05  | must be 0   | `max_fee_per_blob_gas`               | 32      |
+| 0x06  | must be 0   | max cost (basefee=max, all gas used, includes blob cost) | 32      |
+| 0x07  | must be 0   | `len(blob_versioned_hashes)`         | 32      |
+| 0x08  | blob index  | `blob_versioned_hashes[blob index]`  | 32      |
+| 0x09  | must be 0   | `len(frames)`                        | 32      |
+| 0x10  | must be 0   | currently executing frame index      | 32      |
+| 0x11  | frame index | `target`                             | 32      |
+| 0x12  | frame index | `data`                               | dynamic |
+| 0x13  | frame index | `gas_limit`                          | 32      |
+| 0x14  | frame index | `flags`                              | 32      |
+| 0x15  | frame index | `status` (exceptional halt if current/future) | 32      |
 
 Notes:
 - 0x03 and 0x04 have a possible future extension to allow indices for multidimensional gas.
 - The `status` field (0x16) returns `0` for failure or `1` for success.
 - Out-of-bounds access for frame index (`>= len(frames)`) and blob index results in an exceptional halt.
 - Invalid `in1` values (not defined in the table above) result in an exceptional halt.
-
-The `tx_hash_for_signature` (0x06) is computed as:
-
-```
-keccak256(AA_TX_TYPE || rlp([chain_id, nonce, sender, max_priority_fee_per_gas, max_fee_per_gas, max_fee_per_blob_gas, blob_versioned_hashes, frames]))
-```
-
-This is the hash that contracts should use for signature verification. Note that `blob_versioned_hashes` is included in this hash, binding the signature to the specific blobs attached to this transaction.
 
 ### Processing flow
 
@@ -251,7 +241,7 @@ The above rules are sufficient to enable all core goals of account abstraction, 
 
 | Frame | Caller         | Target       | Data      | Flags     |
 | ----- | -------------- | ------------ | --------- | --------- |
-| 0     | AA_ENTRY_POINT | User account | None      | REVERT    |
+| 0     | AA_ENTRY_POINT | User account | Signature      | REVERT    |
 | 1     | User account   | Target addr  | User data | AS_SENDER |
 
 Frame 0 verifies the signature and exits with `APPROVE(0x2)` to approve both execution and payment. Frame 1 executes and exits normally via `RETURN`.
@@ -265,7 +255,7 @@ The mempool can process this transaction with the following static validations:
 
 | Frame | Caller         | Target       | Data           | Flags     |
 | ----- | -------------- | ------------ | -------------- | --------- |
-| 0     | AA_ENTRY_POINT | User account | None           | REVERT    |
+| 0     | AA_ENTRY_POINT | User account | Signature           | REVERT    |
 | 1     | AA_ENTRY_POINT | Paymaster    | Paymaster data | REVERT    |
 | 2     | User account   | ERC-20       | Transfer call  | AS_SENDER |
 | 3     | User account   | Target addr  | User data      | AS_SENDER |
@@ -293,11 +283,10 @@ If the contract is not yet deployed, in all cases, prepend a frame calling the f
 | Max fee                           | 5     |
 | Max fee per blob gas              | 1     |
 | Blob versioned hashes (empty)     | 1     |
-| Signature                         | 65    |
 | Frames wrapper                    | 1     |
 | Sender validation frame: target   | 1     |
 | Sender validation frame: gas      | 2     |
-| Sender validation frame: data     | 0     |
+| Sender validation frame: data     | 65     |
 | Sender validation frame: flags    | 1     |
 | Execution frame: target           | 20    |
 | Execution frame: gas              | 1     |
