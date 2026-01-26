@@ -80,7 +80,7 @@ Some validity constraints can be determined statically. They are outlined below:
 
 ```python
 assert tx.chain_id < 2**256
-assert tx.nonce < 2**256
+assert tx.nonce < 2**64
 assert len(tx.frames) > 0
 assert len(tx.sender) == 20
 assert tx.frames[n].flags >> 3 == 0
@@ -110,7 +110,7 @@ The approval argument must be one of the following values:
 
 If the approval argument is `>= 0x3`, execution results in an exceptional halt.
 
-`APPROVE` may be invoked from nested calls within a frame, as long as the approval propagates from the required contract (sender for `0x0`/`0x2`, payer for `0x1`/`0x2`).
+`APPROVE` may be invoked from nested calls within a frame. `APPROVE(0x1)` can be invoked at any time and the invoker will pay for the gas in the transaction. Only code executing in the context of `tx.sender` can invoke `APPROVE(0x0)` and `APPROVE(0x02)` successfully. Once `APPROVE` is executed, future calls of the instruction will not change the initial approve status. If `APPROVE` is called again with a value it has previously been called with in an earlier frame (i.e. `0x0`, then `0x2` or `0x1` and again `0x1`) perform a transaction-level revert. If `APPROVE` is called outside a valid context, performa transaction-level revert.
 
 The status of a call returning with `APPROVE` has three new potential status codes.
 
@@ -146,7 +146,7 @@ Each `TXPARAM*` opcode takes two extra stack input values before the `CALLDATA*`
 | 0x13  | frame index | `data`                               | dynamic |
 | 0x14  | frame index | `gas_limit`                          | 32      |
 | 0x15  | frame index | `flags`                              | 32      |
-| 0x16  | frame index | `status` (error if current/future)   | 32      |
+| 0x16  | frame index | `status` (exceptional halt if current/future) | 32      |
 
 Notes:
 - 0x03 and 0x04 have a possible future extension to allow indices for multidimensional gas.
@@ -166,6 +166,9 @@ This is the hash that contracts should use for signature verification.
 
 When processing a AA transaction, perform the following steps.
 
+Perform stateful validation check:
+- Ensure `tx.nonce == state[tx.sender].nonce`
+
 Initialize with transaction-scoped variables:
 - `payer_approved: bool = false`
 - `sender_approved: bool = false`
@@ -180,7 +183,7 @@ Then for each call frame:
 2. If the call fails (reverts, runs out of gas, or hits an exception), revert the call frame as normal and skip to step 4.
 3. If the call exits with `APPROVE`, update approval state based on the argument:
    - `0x0` (execution approval): If `target` equals `tx.sender`, set `sender_approved = true`.
-   - `0x1` (payment approval): If `payer_approved` is `false`, increment the nonce, collect the total gas cost from `target`, and set `payer_approved = true`. The total gas cost is defined as `sum(frame.gas_limit for all frames) × effective_gas_price`, where `effective_gas_price` is calculated per EIP-1559. If `target` has insufficient balance, perform a Transaction-level Revert.
+   - `0x1` (payment approval): If `payer_approved` is `false`, increment the sender's nonce, collect the total gas cost from `target`, and set `payer_approved = true`. The total gas cost is defined as `sum(frame.gas_limit for all frames) × effective_gas_price`, where `effective_gas_price` is calculated per EIP-1559. If `target` has insufficient balance, perform a Transaction-level Revert.
    - `0x2` (both): Apply both of the above rules.
 4. If `REVERT` is set and the frame did not terminate via `APPROVE`, perform a Transaction-level Revert.
 
@@ -272,14 +275,15 @@ If the contract is not yet deployed, in all cases, prepend a frame calling the f
 | Sender                            | 20    |
 | Max priority fee                  | 5     |
 | Max fee                           | 5     |
+| Signature                         | 65    |
 | Frames wrapper                    | 1     |
 | Sender validation frame: target   | 1     |
 | Sender validation frame: gas      | 2     |
-| Sender validation frame: calldata | 65    |
+| Sender validation frame: data     | 0     |
 | Sender validation frame: flags    | 1     |
 | Execution frame: target           | 20    |
 | Execution frame: gas              | 1     |
-| Execution frame: calldata         | 0     |
+| Execution frame: data             | 0     |
 | Execution frame: flags            | 1     |
 | **Total**                         | 126   |
 
@@ -293,7 +297,7 @@ This is almost equivalent in size to an existing transaction; the only extra ove
 | -------------------------- | ----- |
 | Deployment frame: target   | 20    |
 | Deployment frame: gas      | 3     |
-| Deployment frame: calldata | 100   |
+| Deployment frame: data     | 100   |
 | Deployment frame: flags    | 1     |
 | **Total additional**       | 124   |
 
