@@ -12,13 +12,11 @@ requires: 2718, 4844
 
 ## Abstract
 
-We propose splitting the transaction scope into multiple frames: validations, execution, and post-operation logic. Transaction validity is determined by the result of the validation steps of a transaction.
-
-We further separate transaction validation for the purposes of authorization and the gas fee payment, allowing one contract to pay gas for a transaction that will be executed from another contract.
+Add a new transaction whose validity and gas payment can be defined abstractly via frames. This introduces a generalized form of account abstraction. Instead of relying solely on a single ECDSA signature, accounts may freely define and interpret their signature scheme using any cryptographic system.
 
 ## Motivation
 
-This new transaction provides a native off ramp from the elliptic curve based cryptographic system used to authenticate transactions today, to post-quantum secure systems. It is defined in such an abstract manner that it can support all important use cases: PQ crypto, signature aggregation, native support for Inclusion Lists, etc.
+This new transaction provides a native off-ramp from the elliptic curve based cryptographic system used to authenticate transactions today, to post-quantum secure systems. It is defined in such an abstract manner that it can support all important use cases: PQ crypto, signature aggregation, native support for Inclusion Lists, etc.
 
 ## Specification
 
