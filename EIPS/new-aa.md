@@ -244,7 +244,7 @@ The above rules are sufficient to enable all core goals of account abstraction, 
 
 Frame 0 verifies the signature and exits with `APPROVE(0x2)` to approve both execution and payment. Frame 1 executes and exits normally via `RETURN`.
 
-The mempool can process this transaction with the following static validations:
+The mempool can process this transaction with the following static validation and call:
 
 - Verify that it has 2 frames, and the first has the needed flags (the flags of the second don't matter).
 - Verify that the call of frame 0 succeeds, and does not violate the AA mempool rules (similar to [ERC-7562](https://eips.ethereum.org/EIPS/eip-7562)).
@@ -336,7 +336,46 @@ The `ORIGIN` opcode behavior changes for AA transactions, returning the frame's 
 
 ## Security Considerations
 
-TODO
+### Transaction Malleability
+
+Unlike legacy transactions where the signature directly commits to a fixed set of fields, frame transactions allow accounts to define their own signature verification logic. This flexibility introduces malleability risks if not handled carefully. For example, if a sender's signature does not commit to all transaction fields, a third party (e.g., a malicious bundler or network observer) could modify unsigned fields while the transaction is in flight, causing unintended behavior.
+
+#### Example Attack
+
+Consider a sender that only signs `(nonce, target, calldata)`, but not the frame structure. An attacker could:
+
+1. Intercept the transaction
+2. Add additional frames that execute after the sender's intended operation
+3. These frames could call back into the sender's contract while it's in a vulnerable state
+
+To mitigate, the sender contracts must verify signatures over a hash that commits to the entire transaction. The `TXPARAM` opcode provides access to all relavent transaction fields (chain ID, nonce, sender, all frames, gas parameters, and blob hashes) for constructing their own hash.
+
+Smart account implementations and auditors should verify that:
+1. The signature scheme commits to all frames, not just the "intended" execution frame
+2. The signature commits to gas limits to prevent gas griefing attacks
+3. The signature commits to `chain_id` to prevent cross-chain replay
+
+### Transaction Propagation
+
+Frame transactions introduce new denial-of-service vectors for transaction pools that node operators must mitigate. Because validation logic is arbitrary EVM code, attackers can craft transactions that appear valid during initial validation but become invalid later. Without any additional policies, an attacker could submit many transactions whose validity depends on some shared state, then submit one transaction that modifies that state, and cause all other transactions to become invalid simultaneously. This wastes the computational resources nodes spent validating and storing these transactions.
+
+#### Example Attack
+
+A simple example is transactions that check `block.timestamp`:
+
+```solidity
+function validateTransaction() external {
+    require(block.timestamp < SOME_DEADLINE, "expired");
+    // ... rest of validation
+    APPROVE(0x2);
+}
+```
+
+Such transactions are valid when submitted but become invalid once the deadline passes, without any on-chain action required from the attacker.
+
+##### Mitigations
+
+Node implementations should consider restricting which opcodes and storage slots validation frames can access, similar to [ERC-7562](https://eips.ethereum.org/EIPS/eip-7562). This isolates transactions from each other and limits mass invalidation vectors.
 
 ## Copyright
 
