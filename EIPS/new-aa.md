@@ -155,13 +155,13 @@ Each `TXPARAM*` opcode takes two extra stack input values before the `CALLDATA*`
 | 0x07  | must be 0   | `len(blob_versioned_hashes)`         | 32      |
 | 0x08  | blob index  | `blob_versioned_hashes[blob index]`  | 32      |
 | 0x09  | must be 0   | `compute_sig_hash(tx)`               | 32      |
-| 0x09  | must be 0   | `len(frames)`                        | 32      |
-| 0x10  | must be 0   | currently executing frame index      | 32      |
-| 0x11  | frame index | `target`                             | 32      |
-| 0x12  | frame index | `data`                               | dynamic |
-| 0x13  | frame index | `gas_limit`                          | 32      |
-| 0x14  | frame index | `flags`                              | 32      |
-| 0x15  | frame index | `status` (exceptional halt if current/future) | 32      |
+| 0x10  | must be 0   | `len(frames)`                        | 32      |
+| 0x11  | must be 0   | currently executing frame index      | 32      |
+| 0x12  | frame index | `target`                             | 32      |
+| 0x13  | frame index | `data`                               | dynamic |
+| 0x14  | frame index | `gas_limit`                          | 32      |
+| 0x15  | frame index | `flags`                              | 32      |
+| 0x16  | frame index | `status` (exceptional halt if current/future) | 32      |
 
 Notes:
 - 0x03 and 0x04 have a possible future extension to allow indices for multidimensional gas.
