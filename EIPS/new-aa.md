@@ -27,7 +27,7 @@ This new transaction provides a native off-ramp from the elliptic curve based cr
 | `AA_TX_TYPE`       | `0x06`                                  |
 | `AA_ENTRY_POINT`   | `address(0x7701)`                       |
 | `AA_BASE_GAS_COST` | 15000                                   |
-| `PER_FRAME_COST`   | 960 (cost of 60 nonzero calldata bytes) |
+| `PER_FRAME_COST`   | regular calldata cost for each element  |
 
 ### Opcodes
 
@@ -56,21 +56,23 @@ The field `max_fee_per_blob_gas` represents the maximum fee per blob gas the sen
 
 The `flags` field is interpreted as a bit field with three potential modes: `STATIC`, `REVERT`, and `AS_SENDER`.
 
-| Bit | Name      | Summary                                     |
-| --- | --------- | ------------------------------------------- |
-| 0   | STATIC    | Frame is read-only.                         |
-| 1   | REVERT    | Perform transaction-level revert if call fails. |
-| 2   | AS_SENDER | Set `frame.caller` to `tx.sender`           |
+| Index | Name        | Summary                            |
+| ----- | ----------- | ---------------------------------- |
+|     0 | `STATIC`    | Frame is read-only.                |
+|     1 | `VERIFY`    | Treat as transaction validation.   |
+|     2 | `AS_SENDER` | Set `frame.caller` to `tx.sender`. |
 
-##### `STATIC` Mode
+##### `STATIC` Flag
 
 Frame executes in read-only mode.
 
-##### `REVERT` Mode
+##### `VERIFY` Flag
 
-If the frame terminates without using the `APPROVE` opcode, perform a Transaction-level Revert (defined below).
+Identifies the frame as a validation frame. It's purpose is to *verify* that a sender and/or payer authorized the transaction. It must terminate the frame with `APPROVE`. Any other result will cause a transaction-level revert.
 
-##### `AS_SENDER` Mode
+Frames with this flag will have their data ellided from signature hash calculation and from introspection by other frames.
+
+##### `AS_SENDER` Flag
 
 Frame caller is set to `tx.sender`.
 
@@ -92,8 +94,19 @@ assert len(tx.frames[n].target) == 20 or tx.frames[n].target is None
 The `ReceiptPayload` is defined as:
 
 ```
-[frame_receipt, ...]
-frame_receipt = [status, gas_used, sender, payer, logs]
+[sender, payer, [frame_receipt, ...]]
+frame_receipt = [status, gas_used, logs]
+```
+
+#### Signature Hash
+
+By definition, the signature hash of a transaction does not include the signature. With the frame transaction, the signature may be at an arbitrary location in the transaction frames. To handle this, we define the signature hash so that any frame with `VERIFY` set will have its data ellided during hashing:
+
+```python
+def compute_sig_hash(tx: FrameTx) -> Hash:
+    for i, frame in enumerate(tx.frames):
+        tx.frames[i].data = Bytes()
+    return keccak(rlp(tx))
 ```
 
 ### New Opcodes
@@ -110,7 +123,7 @@ The approval argument must be one of the following values:
 
 If the approval argument is `>= 0x3`, execution results in an exceptional halt.
 
-`APPROVE` may be invoked from nested calls within a frame. `APPROVE(0x1)` can be invoked at any time and the invoker will pay for the gas in the transaction. Only code executing in the context of `tx.sender` can invoke `APPROVE(0x0)` and `APPROVE(0x02)` successfully. Once `APPROVE` is executed, future calls of the instruction will not change the initial approve status. If `APPROVE` is called again with a value it has previously been called with in an earlier frame (i.e. `0x0`, then `0x2` or `0x1` and again `0x1`) perform a transaction-level revert. If `APPROVE` is called outside a valid context, perform a transaction-level revert.
+`APPROVE` must be invoked only in the top-level call frame. Only code executing in the context of `tx.sender` can invoke `APPROVE(0x0)` and `APPROVE(0x02)` successfully. Future frames cannot call `APPROVE` again with a value it has previously been called with in an earlier frame (i.e. `0x0`, then `0x2` or `0x1` and again `0x1`). `APPROVE` cannot be called outside a valid context. Perform a transaction-level revert if any of these conditions aren't met.
 
 The status of a call returning with `APPROVE` has three new potential status codes.
 
@@ -141,6 +154,7 @@ Each `TXPARAM*` opcode takes two extra stack input values before the `CALLDATA*`
 | 0x06  | must be 0   | max cost (basefee=max, all gas used, includes blob cost) | 32      |
 | 0x07  | must be 0   | `len(blob_versioned_hashes)`         | 32      |
 | 0x08  | blob index  | `blob_versioned_hashes[blob index]`  | 32      |
+| 0x09  | must be 0   | `compute_sig_hash(tx)`               | 32      |
 | 0x09  | must be 0   | `len(frames)`                        | 32      |
 | 0x10  | must be 0   | currently executing frame index      | 32      |
 | 0x11  | frame index | `target`                             | 32      |
@@ -154,6 +168,7 @@ Notes:
 - The `status` field (0x16) returns `0` for failure or `1` for success.
 - Out-of-bounds access for frame index (`>= len(frames)`) and blob index results in an exceptional halt.
 - Invalid `in1` values (not defined in the table above) result in an exceptional halt.
+- The `data` field (0x12) returns size 0 value when called on a frame with `VERIFY` set.
 
 ### Processing flow
 
@@ -176,9 +191,9 @@ Then for each call frame:
 2. If the call fails (reverts, runs out of gas, or hits an exception), revert the call frame as normal and skip to step 4.
 3. If the call exits with `APPROVE`, update approval state based on the argument:
    - `0x0` (execution approval): If `target` equals `tx.sender`, set `sender_approved = true`.
-   - `0x1` (payment approval): If `payer_approved` is `false`, increment the sender's nonce, collect the total gas cost from `target`, and set `payer_approved = true`. The total gas cost is defined as `sum(frame.gas_limit for all frames) × effective_gas_price + blob_gas_cost`, where `effective_gas_price` is calculated per EIP-1559 and `blob_gas_cost` is calculated as `len(blob_versioned_hashes) × GAS_PER_BLOB × blob_base_fee` per EIP-4844. If `target` has insufficient balance, perform a Transaction-level Revert.
+   - `0x1` (payment approval): If `payer_approved` is `false`, increment the sender's nonce, collect the total gas cost from `target`, and set `payer_approved = true`. The total gas cost is defined as `sum(frame.gas_limit for all frames) × effective_gas_price + blob_gas_cost`, where `effective_gas_price` is calculated per EIP-1559 and `blob_gas_cost` is calculated as `len(blob_versioned_hashes) × GAS_PER_BLOB × blob_base_fee` per EIP-4844. If `target` has insufficient balance, perform a transaction-level revert. If `sender_approved = false`, and this is executing for `APPROVE(0x1)` and not `APPROVE(0x2)`, perform a transaction-level revert.
    - `0x2` (both): Apply both of the above rules.
-4. If `REVERT` is set and the frame did not terminate via `APPROVE`, perform a Transaction-level Revert.
+4. If `REVERT` is set and the frame did not terminate via `APPROVE`, perform a ransaction-level revert.
 
 After executing all frames, verify that `payer_approved == true`. If it is, refund any unpaid gas to the gas payer. If it is not, the whole transaction is invalid.
 
@@ -235,6 +250,15 @@ The existing `BLOBHASH` opcode (0x49) from EIP-4844 functions identically for fr
 
 The above rules are sufficient to enable all core goals of account abstraction, including transaction sponsorship, and they are even easily extensible to support quantum-resistant signature aggregation.
 
+### Example 0: Simple ETH transfer
+
+| Frame | Caller         | Target       | Data      | Flags     |
+| ----- | -------------- | ------------ | --------- | --------- |
+| 0     | AA_ENTRY_POINT | User account | Signature      | REVERT    |
+| 1     | User account   | User account  | Destination/Amount | AS_SENDER |
+
+A simple transfer is performed by instructing the account to send ETH to the destination account. This requires two frames for mempool compatibility, the validation phase of the transaction has to be static.
+
 ### Example 1: Simple Transaction
 
 | Frame | Caller         | Target       | Data      | Flags     |
@@ -284,7 +308,7 @@ If the contract is not yet deployed, in all cases, prepend a frame calling the f
 | Frames wrapper                    | 1     |
 | Sender validation frame: target   | 1     |
 | Sender validation frame: gas      | 2     |
-| Sender validation frame: data     | 65     |
+| Sender validation frame: data     | 65    |
 | Sender validation frame: flags    | 1     |
 | Execution frame: target           | 20    |
 | Execution frame: gas              | 1     |
